@@ -344,7 +344,7 @@ SOURCES = {
 
 class SourceManager:
     @staticmethod
-    async def search_all(query: str, sources: list = None, limit: int = 20) -> dict:
+    async def search_all(query: str, sources: list = None, limit: int = 20, per_source_timeout: float = 8) -> dict:
         if sources is None:
             sources = list(SOURCES.keys())
         tasks = {}
@@ -355,9 +355,10 @@ class SourceManager:
         results = {}
         for src_name, task in tasks.items():
             try:
-                src_results = await asyncio.wait_for(task, timeout=20)
+                src_results = await asyncio.wait_for(task, timeout=per_source_timeout)
                 results[src_name] = src_results
             except asyncio.TimeoutError:
+                print(f"[SourceManager] {src_name} timeout after {per_source_timeout}s")
                 results[src_name] = []
             except Exception as e:
                 print(f"[SourceManager] {src_name} error: {e}")
@@ -374,37 +375,25 @@ class SourceManager:
 source_manager = SourceManager()
 
 # ─── 推荐列表 ───────────────────────────────────────────
+async def _fetch_rec(src_cls, query, limit, key, title, source_key):
+    """单个推荐源，带8秒超时"""
+    try:
+        src = src_cls()
+        items = await asyncio.wait_for(src.search(query, limit), timeout=8)
+        return key, {"title": title, "source": source_key, "items": items[:limit]}
+    except Exception as e:
+        print(f"[Rec] {key} error: {e}")
+        return key, {"title": title, "source": source_key, "items": []}
+
 async def get_recommendations() -> dict:
-    recommendations = {}
-    try:
-        netease = NetEaseSource()
-        hot = await netease.search("热门歌曲 2024 2025", limit=10)
-        recommendations["netease_hot"] = {"title": "🔥 网易云热歌榜", "source": "netease", "items": hot[:10]}
-    except Exception as e:
-        print(f"[Recommend] NetEase error: {e}")
-        recommendations["netease_hot"] = {"title": "🔥 网易云热歌榜", "source": "netease", "items": []}
-    try:
-        youtube = YouTubeSource()
-        yt_pop = await youtube.search("popular music 2025", limit=10)
-        recommendations["youtube_popular"] = {"title": "🎵 YouTube 热门音乐", "source": "youtube", "items": yt_pop[:10]}
-    except Exception as e:
-        print(f"[Recommend] YouTube error: {e}")
-        recommendations["youtube_popular"] = {"title": "🎵 YouTube 热门音乐", "source": "youtube", "items": []}
-    try:
-        bili = BilibiliSource()
-        bili_music = await bili.search("音乐推荐 无损", limit=10)
-        recommendations["bilibili_music"] = {"title": "🎶 B站音乐精选", "source": "bilibili", "items": bili_music[:10]}
-    except Exception as e:
-        print(f"[Recommend] Bilibili error: {e}")
-        recommendations["bilibili_music"] = {"title": "🎶 B站音乐精选", "source": "bilibili", "items": []}
-    try:
-        sc = SoundCloudSource()
-        sc_pop = await sc.search("trending music", limit=10)
-        recommendations["soundcloud_trending"] = {"title": "🎧 SoundCloud 趋势", "source": "soundcloud", "items": sc_pop[:10]}
-    except Exception as e:
-        print(f"[Recommend] SoundCloud error: {e}")
-        recommendations["soundcloud_trending"] = {"title": "🎧 SoundCloud 趋势", "source": "soundcloud", "items": []}
-    return recommendations
+    tasks = [
+        _fetch_rec(NetEaseSource, "热门歌曲 2024 2025", 10, "netease_hot", "🔥 网易云热歌榜", "netease"),
+        _fetch_rec(YouTubeSource, "popular music 2025", 10, "youtube_popular", "🎵 YouTube 热门音乐", "youtube"),
+        _fetch_rec(BilibiliSource, "音乐推荐 无损", 10, "bilibili_music", "🎶 B站音乐精选", "bilibili"),
+        _fetch_rec(SoundCloudSource, "trending music", 10, "soundcloud_trending", "🎧 SoundCloud 趋势", "soundcloud"),
+    ]
+    results = await asyncio.gather(*tasks)
+    return dict(results)
 
 # ─── API 路由 ───────────────────────────────────────────
 @app.get("/")
@@ -677,9 +666,10 @@ img{-webkit-user-drag:none}
 .player-bar{
   background:linear-gradient(180deg,var(--bg2),var(--bg3));
   border-top:1px solid rgba(108,92,231,.15);padding:8px 20px;
-  display:flex;align-items:center;gap:14px;flex-shrink:0;z-index:55;
+  display:none!important;align-items:center;gap:14px;flex-shrink:0;z-index:55;
   min-height:64px;
 }
+.player-bar.visible{display:flex!important}
 .pb-track{display:flex;align-items:center;gap:10px;min-width:180px;max-width:260px;flex-shrink:0}
 .pb-thumb{
   width:44px;height:44px;border-radius:var(--r-sm);object-fit:cover;background:var(--bg4);flex-shrink:0;
@@ -777,7 +767,6 @@ img{-webkit-user-drag:none}
   .view{padding:12px}
   .rec-grid{grid-template-columns:1fr}
   .player-bar{padding:6px 12px;gap:8px}
-  .pb-track{min-width:100px}
   .pb-progress{display:none}
   .pb-title{max-width:100px}
   .pl-sidebar{width:300px}
@@ -1074,8 +1063,10 @@ function renderRecs(){
 //  PLAYBACK ENGINE
 // ═══════════════════════════════════════
 async function playTrack(source,id,title,artist,thumb,url,duration){
-  // Show player bar
-  document.getElementById('playerBar').style.display='flex';
+  // Show player bar only when playing
+  const pb=document.getElementById('playerBar');
+  pb.style.display='flex';
+  pb.classList.add('visible');
   document.getElementById('pbTitle').textContent=title;
   document.getElementById('pbArtist').textContent=artist;
   document.getElementById('pbThumb').src=thumb||FALLBACK_IMG;
@@ -1227,7 +1218,11 @@ function playByIdx(i){
 function rmTrack(i){
   S.playlist.splice(i,1);
   if(i<S.curIdx)S.curIdx--;
-  else if(i===S.curIdx){S.curIdx=-1;S.audio.src='';document.getElementById('playerBar').style.display='none';}
+  else if(i===S.curIdx){
+    S.curIdx=-1;S.audio.src='';
+    const pb=document.getElementById('playerBar');
+    pb.style.display='none';pb.classList.remove('visible');
+  }
   updatePL();
   onStateChange();
 }
