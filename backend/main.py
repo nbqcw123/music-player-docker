@@ -798,13 +798,19 @@ async def search_music(
     source: str = Query("all", description="音乐源"),
     limit: int = Query(20, ge=1, le=50),
 ):
+    """全局搜索：自动搜索所有可用源，合并去重"""
+    all_results = {}
+    
+    # 在线音乐源
     if source == "all":
         sources = list(SOURCES.keys())
     else:
         sources = [source]
-    results = await source_manager.search_all(q, sources, limit)
     
-    # 同时搜索网盘
+    online_results = await source_manager.search_all(q, sources, limit)
+    all_results.update(online_results)
+    
+    # 网盘源
     netdisk = get_netdisk_manager()
     if netdisk:
         try:
@@ -812,13 +818,26 @@ async def search_music(
                 _search_netdisk(netdisk, q, limit),
                 timeout=15
             )
-            results.update(nd_results)
-        except asyncio.TimeoutError:
-            print("[Search] netdisk timeout")
+            all_results.update(nd_results)
         except Exception as e:
             print(f"[Search] netdisk error: {e}")
     
-    return {"query": q, "results": results}
+    # 合并所有结果为一个列表（前端不显示来源）
+    merged = []
+    seen = set()
+    for src, items in all_results.items():
+        if not items:
+            continue
+        for t in items:
+            # 用 title+artist 去重
+            key = (t.get("title", "") + t.get("artist", "")).lower().replace(" ", "")
+            if key in seen:
+                continue
+            seen.add(key)
+            t["_source"] = src  # 内部标记来源，前端不用
+            merged.append(t)
+    
+    return {"query": q, "results": {"all": merged}}
 
 async def _search_netdisk(netdisk: dict, keyword: str, limit: int) -> dict:
     """搜索所有已配置网盘"""
@@ -841,6 +860,7 @@ async def get_stream_url(
     source: str = Query(..., description="音乐源"),
     id: str = Query(..., description="音乐ID或URL"),
 ):
+    """全局播放：自动从对应源获取播放链接"""
     # 网盘播放
     netdisk = get_netdisk_manager()
     if source in netdisk:
@@ -849,9 +869,33 @@ async def get_stream_url(
             return {"stream_url": url, "title": "", "artist": "", "format": "audio"}
         raise HTTPException(status_code=404, detail="无法获取网盘下载链接")
     
+    # 在线音乐播放
     stream_info = await source_manager.get_stream(source, id)
     if not stream_info or not stream_info.get("stream_url"):
-        raise HTTPException(status_code=404, detail="无法获取播放地址")
+        # 如果直接获取失败，尝试用 GDStudio API（仅网易云）
+        if source == "netease":
+            try:
+                gds_url = f"https://music-api.gdstudio.xyz/api.php?types=url&source=netease&id={id}"
+                async with aiohttp.ClientSession() as session:
+                    async with session.get(gds_url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            text = await resp.text(encoding="utf-8")
+                            gds_data = json.loads(text)
+                            gds_stream = gds_data.get("url", "")
+                            if gds_stream:
+                                return {
+                                    "stream_url": gds_stream,
+                                    "title": "",
+                                    "artist": "",
+                                    "duration": 0,
+                                    "format": gds_data.get("type", "flac") or "mp3",
+                                    "bitrate": gds_data.get("br", 0),
+                                }
+            except Exception as e:
+                print(f"[Stream] GDStudio fallback error: {e}")
+        
+        raise HTTPException(status_code=404, detail="无法获取播放地址，可能需要配置代理")
+    
     return stream_info
 
 
@@ -1032,6 +1076,7 @@ img{-webkit-user-drag:none}
   color:var(--accent2);flex-shrink:0;
 }
 .track-dur{font-size:.78em;color:var(--text3);flex-shrink:0;margin-left:8px}
+.track-index{width:28px;font-size:.75em;color:var(--text3);flex-shrink:0;text-align:center}
 
 /* ═══ HISTORY VIEW ═══ */
 .history-list{display:grid;gap:6px}
@@ -1224,17 +1269,9 @@ img{-webkit-user-drag:none}
     </div>
   </nav>
 
-  <!-- SOURCE TABS -->
-  <div class="src-tabs" id="srcTabs">
-    <button class="src-tab active" data-src="all" onclick="switchSrc(this)">🌐 全部</button>
-    <button class="src-tab" data-src="netease" onclick="switchSrc(this)">☁️ 网易云</button>
-    <button class="src-tab" data-src="qq" onclick="switchSrc(this)">🐧 QQ音乐</button>
-    <button class="src-tab" data-src="kugou" onclick="switchSrc(this)">🎵 酷狗</button>
-    <button class="src-tab" data-src="bilibili" onclick="switchSrc(this)">📹 哔哩哔哩</button>
-    <button class="src-tab" data-src="youtube" onclick="switchSrc(this)" title="需代理">📺 YouTube 🔒</button>
-    <button class="src-tab" data-src="baidupan" onclick="switchSrc(this)" id="tab-baidupan" style="display:none">📁 百度网盘</button>
-    <button class="src-tab" data-src="aliyun" onclick="switchSrc(this)" id="tab-aliyun" style="display:none">☁️ 阿里云盘</button>
-    <button class="src-tab" data-src="quark" onclick="switchSrc(this)" id="tab-quark" style="display:none">🍐 夸克网盘</button>
+  <!-- 全局搜索提示 -->
+  <div class="global-search-hint" style="text-align:center;padding:4px 12px;font-size:.78em;color:var(--text3);background:var(--bg2);border-bottom:1px solid rgba(108,92,231,.08)">
+    🔍 全局搜索 · 自动匹配最优音源 · 支持网易云/QQ/酷狗/B站/网盘
   </div>
 
   <!-- VIEWS -->
@@ -1386,52 +1423,97 @@ function switchView(name){
 }
 
 function switchSrc(el){
+  // 全局模式：点击标签仅作视觉反馈，实际搜索全部源
   document.querySelectorAll('.src-tab').forEach(t=>t.classList.remove('active'));
   el.classList.add('active');
-  S.src=el.dataset.src;
 }
 
 // ═══════════════════════════════════════
 //  SEARCH
 // ═══════════════════════════════════════
-function triggerSearch(){
+// 全局搜索 - 不显示来源，自动匹配最优音源
+async function triggerSearch(){
   const q=document.getElementById('searchInput').value.trim();
   if(!q)return;
   switchView('search');
-  doSearch(q);
+  await globalSearch(q);
 }
 
-function doSearch(q){
-  const btn=document.getElementById('searchBtn');const content=document.getElementById('searchContent');
-  btn.disabled=true;btn.textContent='搜索中...';
-  content.innerHTML='<div class="loading"><div class="spinner"></div><span>正在搜索「'+q+'」...</span></div>';
-  document.getElementById('searchTitle').textContent='「'+q+'」的搜索结果';
-  fetch(`/api/search?q=${encodeURIComponent(q)}&source=${S.src}&limit=30`)
-    .then(r=>r.json())
-    .then(data=>{
-      renderSearchResults(data);
-      btn.disabled=false;btn.textContent='🔍 搜索';
-    })
-    .catch(e=>{
-      content.innerHTML='<div class="empty"><div class="empty-icon">⚠️</div>搜索失败: '+e.message+'</div>';
-      btn.disabled=false;btn.textContent='🔍 搜索';
-    });
-}
-
-function renderSearchResults(data){
+async function globalSearch(q){
+  const btn=document.getElementById('searchBtn');
   const content=document.getElementById('searchContent');
-  let html='',total=0;
-  const results=data.results||{};
-  for(const[src,items] of Object.entries(results)){
-    if(!items||!items.length)continue;
-    total+=items.length;
-    html+=`<div class="section-header" style="margin:12px 0 8px;font-weight:600;font-size:.9em;color:var(--text2)">${items[0]?.source_name||src} (${items.length})</div>`;
-    html+='<div class="track-list fade-in">';
-    items.forEach(t=>html+=trackCard(t,src));
-    html+='</div>';
+  btn.disabled=true;btn.textContent='搜索中...';
+  content.innerHTML='<div class="loading"><div class="spinner"></div><span>正在全网搜索「'+q+'」...</span></div>';
+  document.getElementById('searchTitle').textContent='「'+q+'」的搜索结果';
+  try{
+    const res=await fetch(`/api/search?q=${encodeURIComponent(q)}&source=all&limit=50`);
+    const data=await res.json();
+    const tracks=(data.results||{}).all||[];
+    renderGlobalResults(tracks);
+    document.getElementById('searchCount').textContent=tracks.length?`共 ${tracks.length} 条结果`:'';
+  }catch(e){
+    content.innerHTML='<div class="empty"><div class="empty-icon">⚠️</div>搜索失败: '+e.message+'</div>';
   }
-  document.getElementById('searchCount').textContent=total?`共 ${total} 条结果`:'';
-  content.innerHTML=total?html:'<div class="empty"><div class="empty-icon">😔</div>未找到结果，请尝试其他关键词或音源</div>';
+  btn.disabled=false;btn.textContent='🔍 搜索';
+}
+
+function renderGlobalResults(tracks){
+  const content=document.getElementById('searchContent');
+  if(!tracks.length){
+    content.innerHTML='<div class="empty"><div class="empty-icon">😔</div>未找到结果，请尝试其他关键词</div>';
+    return;
+  }
+  let html='<div class="track-list fade-in">';
+  tracks.forEach((t,i)=>{
+    const dur=fmtDur(t.duration);
+    const thumb=t.thumbnail||FALLBACK_IMG;
+    const src=t._source||'netease';
+    html+=`<div class="track-card" onclick="playGlobalTrack('${escJS(t.id)}','${escJS(t.title)}','${escJS(t.artist)}','${escJS(thumb||'')}','${escJS(t.url||'')}',${t.duration||0},'${src}')">
+      <span class="track-index">${i+1}</span>
+      <img class="track-thumb-48" src="${thumb}" alt="" loading="lazy" onerror="this.src='${FALLBACK_IMG}'">
+      <div class="track-info">
+        <div class="track-title">${escHtml(t.title)}</div>
+        <div class="track-meta">${escHtml(t.artist)}${t.album?' · '+escHtml(t.album):''}</div>
+      </div>
+      <span class="track-dur">${dur}</span>
+    </div>`;
+  });
+  html+='</div>';
+  content.innerHTML=html;
+}
+
+async function playGlobalTrack(id,title,artist,thumb,url,duration,source){
+  const pb=document.getElementById('playerBar');
+  pb.style.display='flex';
+  pb.classList.add('visible');
+  document.getElementById('pbTitle').textContent=title;
+  document.getElementById('pbArtist').textContent=artist;
+  document.getElementById('pbThumb').src=thumb||FALLBACK_IMG;
+  document.getElementById('playBtn').textContent='⏳';
+  S.isPlaying=false;
+  const track={id,title,artist,thumb:thumb||'',url:url||'',duration:duration||0,source};
+  const ex=S.playlist.findIndex(t=>t.id===id);
+  if(ex>=0){S.curIdx=ex;}
+  else{S.playlist.push(track);S.curIdx=S.playlist.length-1;}
+  S.curTrack=track;
+  updatePL();
+  addHistory(track);
+  try{
+    const res=await fetch(`/api/stream?source=${source}&id=${encodeURIComponent(id)}`);
+    if(!res.ok)throw new Error('无法获取播放地址');
+    const data=await res.json();
+    let stream=data.stream_url;
+    if(!stream)throw new Error('播放地址为空');
+    if(stream.startsWith('http'))stream=`/api/proxy?url=${encodeURIComponent(stream)}`;
+    S.audio.src=stream;
+    await S.audio.play();
+  }catch(e){
+    console.error(e);
+    showToast('播放失败: '+e.message,'err');
+    document.getElementById('playBtn').textContent='▶';
+  }
+  onStateChange();
+  renderNP();
 }
 
 function trackCard(t,src){

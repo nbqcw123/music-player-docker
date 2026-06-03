@@ -129,3 +129,24 @@
 ### 新增
 - 🏠 群辉 NAS 安装支持
 - 📦 版本管理说明
+
+---
+
+# v0.3.3 (2026-06-03)
+
+## 全局搜索模式
+
+### 调研
+- 分析了 myfreemp3.com.cn：使用 musicapi.leanapp.cn（已挂）
+- 分析了 tonzhon.com：使用自托管 MKOnlineMusicPlayer API
+- 最终方案：tonzhon 搜索 + GDStudio 播放 URL + tonzhon 歌词
+
+### 新增
+- 🔍 **全局搜索**：自动搜索所有源（网易云/QQ/酷狗/B站/网盘），合并去重
+- 🎵 **自动播放**：根据歌曲来源自动获取播放链接
+- 🎨 **简化 UI**：移除音源选择标签，用户不感知来源
+
+### 技术细节
+- 搜索API：`source=all` 时合并所有源结果，按 title+artist 去重
+- 播放API：支持 fallback，网易云自动尝试 GDStudio API
+- 前端：triggerSearch -> globalSearch，renderGlobalResults 统一渲染
