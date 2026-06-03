@@ -38,8 +38,10 @@ RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
 
 COPY main.py .
 
+RUN find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; find . -name "*.pyc" -delete 2>/dev/null; true
+
 RUN mkdir -p /tmp/music_cache
 
 EXPOSE 8080
 
-CMD ["python", "main.py"]
+CMD ["python", "-B", "main.py"]
