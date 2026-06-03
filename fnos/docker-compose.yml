@@ -1,12 +1,18 @@
-# 🎵 Music Player Docker - 飞牛 NAS 安装包
+# 🎵 Music Player Docker - 飞牛 NAS Docker Compose 配置
 # 版本: v0.1.0-dev
-# 注意: 飞牛 Docker 无法直接拉取 Docker Hub 镜像
-# 请先按照 安装说明.md 中的步骤手动构建镜像
+#
+# 注意: 此配置需要当前目录包含 Dockerfile 和 main.py
+# 安装步骤:
+#   1. SSH 登录飞牛 NAS
+#   2. mkdir -p /vol1/docker/music-player && cd /vol1/docker/music-player
+#   3. 将 Dockerfile 和 main.py 放入该目录
+#   4. docker compose up -d
+#   5. 访问 http://NAS的IP:8080/player
 
 services:
   music-player:
     build:
-      context: https://github.com/nbqcw123/music-player-docker.git
+      context: .
       dockerfile: Dockerfile
     image: music-player:dev
     container_name: music-player
