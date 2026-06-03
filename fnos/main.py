@@ -22,7 +22,7 @@ from pydantic import BaseModel
 app = FastAPI(
     title="Music Player Docker",
     description="在线音乐播放器 - 支持多源搜索、无损格式、SPA界面",
-    version="0.2.0-spa"
+    version="0.3.1"
 )
 
 app.add_middleware(
