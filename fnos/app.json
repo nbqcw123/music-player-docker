@@ -1,0 +1,16 @@
+{
+  "name": "Music Player Docker",
+  "name_en": "Music Player Docker",
+  "version": "0.1.0-dev",
+  "description": "在线音乐播放器 - 支持多源搜索(YouTube/Bilibili/网易云/SoundCloud/FMA)、无损格式(FLAC/APE/WAV)、自适应网页界面",
+  "description_en": "Online music player with multi-source search, lossless format support, and responsive web UI",
+  "author": "nbqcw123",
+  "repository": "https://github.com/nbqcw123/music-player-docker",
+  "icon": "icon.png",
+  "category": "entertainment",
+  "tags": ["music", "player", "streaming", "docker"],
+  "port": 8080,
+  "scheme": "http",
+  "ingress": false,
+  "arch": ["amd64", "arm64"]
+}
