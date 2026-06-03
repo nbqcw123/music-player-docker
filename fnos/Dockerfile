@@ -1,13 +1,18 @@
-FROM python:3.11-slim
+# 使用 DaoCloud 镜像加速
+FROM m.daocloud.io/docker.io/library/python:3.11-slim
 
 LABEL maintainer="Music Player Docker"
-LABEL version="0.1.0-dev"
-LABEL description="在线音乐播放器 - 多源搜索/无损格式/自适应网页 v0.1.0-dev"
+LABEL version="0.2.0-spa"
+LABEL description="在线音乐播放器 - 多源搜索/无损格式/SPA界面 v0.2.0-spa"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     TZ=Asia/Shanghai
+
+# 使用清华 apt 镜像加速
+RUN sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list.d/debian.sources 2>/dev/null || \
+    sed -i 's/deb.debian.org/mirrors.tuna.tsinghua.edu.cn/g' /etc/apt/sources.list 2>/dev/null || true
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
@@ -16,16 +21,25 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
-COPY backend/requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# 使用清华 pip 镜像加速
+RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple \
+    fastapi==0.111.0 \
+    uvicorn[standard]==0.30.1 \
+    aiohttp==3.9.5 \
+    yt-dlp==2024.5.27 \
+    python-multipart==0.0.9 \
+    pydantic==2.7.4 \
+    lxml==5.2.2 \
+    beautifulsoup4==4.12.3 \
+    feedparser==6.0.11 \
+    aiodns==3.2.0 \
+    Brotli==1.1.0 \
+    certifi==2024.6.2
 
-COPY backend/ .
+COPY main.py .
 
 RUN mkdir -p /tmp/music_cache
 
 EXPOSE 8080
-
-HEALTHCHECK --interval=30s --timeout=10s --retries=3 \
-    CMD curl -f http://localhost:8080/ || exit 1
 
 CMD ["python", "main.py"]
