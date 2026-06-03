@@ -480,7 +480,7 @@ async def get_recommendations() -> dict:
 # ─── API 路由 ───────────────────────────────────────────
 @app.get("/")
 async def root():
-    return {"status": "ok", "app": "Music Player Docker", "version": "0.2.0-spa"}
+    return {"status": "ok", "app": "Music Player Docker", "version": "0.3.1"}
 
 
 @app.get("/api/sources")
