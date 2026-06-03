@@ -316,67 +316,77 @@ COMMON_HEADERS = {
 
 
 class NetEaseSource(MusicSourceBase):
-    """网易云音乐 - 使用PC端搜索API + 播放URL v1"""
+    """网易云音乐 - 使用 tonzhon 搜索API + GDStudio 播放URL"""
     name = "netease"
     display_name = "网易云音乐"
 
     async def search(self, query: str, limit: int = 20) -> list:
         results = []
         try:
-            url = "https://music.163.com/api/cloudsearch/pc"
-            params = {"s": query, "type": "1", "offset": "0", "limit": str(limit)}
-            headers = {**COMMON_HEADERS, "Referer": "https://music.163.com/"}
+            # 使用 tonzhon 的搜索API（稳定可用）
+            url = "https://tonzhon.com/api.php"
+            payload = f"types=search&name={query}&source=netease"
+            headers = {
+                **COMMON_HEADERS,
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Referer": "https://tonzhon.com/",
+            }
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.post(url, data=payload, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
-                        data = await resp.json(encoding="utf-8", content_type=None)
-                        songs = data.get("result", {}).get("songs", [])
-                        for song in songs:
-                            artists = ", ".join(a.get("name", "") for a in song.get("ar", []))
-                            album = song.get("al", {})
-                            duration_ms = song.get("dt", 0) or 0
-                            results.append({
-                                "id": str(song.get("id", "")),
-                                "title": song.get("name", "Unknown"),
-                                "artist": artists or "Unknown",
-                                "duration": duration_ms // 1000,
-                                "thumbnail": album.get("picUrl", ""),
-                                "album": album.get("name", ""),
-                                "url": f"https://music.163.com/song?id={song.get('id', '')}",
-                                "source": self.name,
-                                "source_name": self.display_name,
-                                "format": "mp3/flac",
-                                "quality": "标准/无损",
-                            })
+                        text = await resp.text(encoding="utf-8")
+                        data = json.loads(text)
+                        if isinstance(data, list):
+                            for song in data[:limit]:
+                                # artist 可能是嵌套列表
+                                artist_raw = song.get("artist", "")
+                                if isinstance(artist_raw, list):
+                                    # 展平嵌套列表
+                                    artists = []
+                                    for a in artist_raw:
+                                        if isinstance(a, list):
+                                            artists.extend(a)
+                                        else:
+                                            artists.append(a)
+                                    artist_str = ", ".join(str(x) for x in artists if x)
+                                else:
+                                    artist_str = str(artist_raw)
+                                
+                                results.append({
+                                    "id": str(song.get("id", "")),
+                                    "title": song.get("name", "Unknown"),
+                                    "artist": artist_str or "Unknown",
+                                    "duration": song.get("duration", 0),
+                                    "thumbnail": f"https://p1.music.126.net/{song.get('pic_id', '')}.jpg" if song.get('pic_id') else "",
+                                    "album": song.get("album", ""),
+                                    "source": self.name,
+                                    "source_name": self.display_name,
+                                    "format": "mp3/flac",
+                                    "quality": "标准/无损",
+                                })
         except Exception as e:
             print(f"[NetEase] Search error: {e}")
         return results
 
     async def get_stream(self, song_id: str) -> dict:
         try:
-            # 尝试多个音质级别
-            for level, enc in [("standard", "mp3"), ("higher", "mp3"), ("exhigh", "flac"), ("lossless", "flac")]:
-                url = "https://music.163.com/api/song/enhance/player/url/v1"
-                params = {"ids": f"[{song_id}]", "level": level, "encodeType": enc}
-                headers = {**COMMON_HEADERS, "Referer": "https://music.163.com/"}
-                async with aiohttp.ClientSession() as session:
-                    async with session.post(url, data=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                        if resp.status == 200:
-                            text = await resp.text(encoding="utf-8")
-                            data = json.loads(text)
-                            items = data.get("data", [])
-                            if items:
-                                item = items[0]
-                                stream_url = item.get("url", "")
-                                if stream_url:
-                                    return {
-                                        "stream_url": stream_url,
-                                        "title": "",
-                                        "artist": "",
-                                        "duration": (item.get("time", 0) or 0) // 1000,
-                                        "format": item.get("type", "mp3"),
-                                        "bitrate": item.get("br", 0),
-                                    }
+            # 使用 GDStudio API 获取播放URL（稳定可用）
+            url = f"https://music-api.gdstudio.xyz/api.php?types=url&source=netease&id={song_id}"
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        text = await resp.text(encoding="utf-8")
+                        data = json.loads(text)
+                        stream_url = data.get("url", "")
+                        if stream_url:
+                            return {
+                                "stream_url": stream_url,
+                                "title": "",
+                                "artist": "",
+                                "duration": 0,
+                                "format": data.get("type", "flac") or "mp3",
+                                "bitrate": data.get("br", 0),
+                            }
         except Exception as e:
             print(f"[NetEase] Stream error: {e}")
         return {}

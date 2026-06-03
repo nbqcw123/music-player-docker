@@ -99,3 +99,33 @@
 ### 注意事项
 - 开发版本，功能持续完善中
 - 部分音源可能受网络环境限制
+
+---
+
+# v0.3.2 (2026-06-03)
+
+## 网易云搜索+播放修复
+
+### 调研
+- 分析了 myfreemp3.com.cn 和 tonzhon.com 的播放方式
+- myfreemp3 使用 musicapi.leanapp.cn（已挂）
+- tonzhon 使用自托管 MKOnlineMusicPlayer API
+
+### 修复
+- 🔍 **网易云搜索**：改用 tonzhon.com API（稳定可用）
+- 🎵 **网易云播放**：改用 music-api.gdstudio.xyz API
+- ✅ 搜索结果正常返回，播放链接有效
+
+### 已知限制
+- QQ音乐/酷狗音乐播放地址需要认证，暂不可用
+- B站播放需要 cookie，暂不可用
+- YouTube 国内不可用
+- 网盘功能（百度网盘/阿里云盘/夸克）需要配置 token/cookie
+
+---
+
+# v0.3.2 (2026-06-03) [群辉NAS支持]
+
+### 新增
+- 🏠 群辉 NAS 安装支持
+- 📦 版本管理说明
