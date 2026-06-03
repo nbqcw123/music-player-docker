@@ -1,0 +1,25 @@
+version: '3.8'
+
+services:
+  music-player:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: music-player
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - CACHE_DIR=/tmp/music_cache
+      - TZ=Asia/Shanghai
+    volumes:
+      - music_cache:/tmp/music_cache
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  music_cache:
