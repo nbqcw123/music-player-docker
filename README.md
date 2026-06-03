@@ -19,21 +19,34 @@
 
 ## 🚀 快速开始
 
-### Docker Compose (推荐)
+### ⚠️ 国内用户注意
+
+由于 Docker Hub 在国内访问不稳定，**推荐从 GitHub 源码构建**：
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/music-player-docker.git
+# 1. 克隆项目
+git clone https://github.com/nbqcw123/music-player-docker.git
 cd music-player-docker
-docker-compose up -d
+
+# 2. 构建镜像（约 3-5 分钟）
+docker build -t music-player:dev .
+
+# 3. 运行容器
+docker run -d -p 8080:8080 --name music-player music-player:dev
+
+# 4. 访问 http://localhost:8080/player
 ```
 
-访问 http://localhost:8080/player
+### 飞牛 NAS 安装
 
-### Docker 直接运行
+详见 [`fnos/安装说明.md`](fnos/安装说明.md)，支持飞牛 Docker 管理界面导入和 SSH 命令行两种方式。
+
+### Docker Compose (国际用户)
 
 ```bash
-docker build -t music-player:dev .
-docker run -d -p 8080:8080 --name music-player music-player:dev
+git clone https://github.com/nbqcw123/music-player-docker.git
+cd music-player-docker
+docker-compose up -d
 ```
 
 ### 本地开发
