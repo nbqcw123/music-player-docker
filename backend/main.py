@@ -67,6 +67,230 @@ class MusicSourceBase:
     async def get_stream(self, url_or_id: str) -> dict:
         raise NotImplementedError
 
+COMMON_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+}
+
+
+class NetEaseSource(MusicSourceBase):
+    """网易云音乐 - 使用PC端搜索API + 播放URL v1"""
+    name = "netease"
+    display_name = "网易云音乐"
+
+    async def search(self, query: str, limit: int = 20) -> list:
+        results = []
+        try:
+            url = "https://music.163.com/api/cloudsearch/pc"
+            params = {"s": query, "type": "1", "offset": "0", "limit": str(limit)}
+            headers = {**COMMON_HEADERS, "Referer": "https://music.163.com/"}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(encoding="utf-8", content_type=None)
+                        songs = data.get("result", {}).get("songs", [])
+                        for song in songs:
+                            artists = ", ".join(a.get("name", "") for a in song.get("ar", []))
+                            album = song.get("al", {})
+                            duration_ms = song.get("dt", 0) or 0
+                            results.append({
+                                "id": str(song.get("id", "")),
+                                "title": song.get("name", "Unknown"),
+                                "artist": artists or "Unknown",
+                                "duration": duration_ms // 1000,
+                                "thumbnail": album.get("picUrl", ""),
+                                "album": album.get("name", ""),
+                                "url": f"https://music.163.com/song?id={song.get('id', '')}",
+                                "source": self.name,
+                                "source_name": self.display_name,
+                                "format": "mp3/flac",
+                                "quality": "标准/无损",
+                            })
+        except Exception as e:
+            print(f"[NetEase] Search error: {e}")
+        return results
+
+    async def get_stream(self, song_id: str) -> dict:
+        try:
+            url = "https://music.163.com/api/song/enhance/player/url/v1"
+            params = {"ids": f"[{song_id}]", "level": "standard", "encodeType": "flac"}
+            headers = {**COMMON_HEADERS, "Referer": "https://music.163.com/"}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, data=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(encoding="utf-8", content_type=None)
+                        items = data.get("data", [])
+                        if items:
+                            item = items[0]
+                            stream_url = item.get("url", "")
+                            return {
+                                "stream_url": stream_url,
+                                "title": "",
+                                "artist": "",
+                                "duration": (item.get("time", 0) or 0) // 1000,
+                                "format": item.get("type", "mp3"),
+                                "bitrate": item.get("br", 0),
+                            }
+        except Exception as e:
+            print(f"[NetEase] Stream error: {e}")
+        return {}
+
+
+class QQMusicSource(MusicSourceBase):
+    """QQ音乐 - 使用搜索API"""
+    name = "qq"
+    display_name = "QQ音乐"
+
+    async def search(self, query: str, limit: int = 20) -> list:
+        results = []
+        try:
+            url = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp"
+            params = {
+                "format": "json",
+                "p": "1",
+                "n": str(limit),
+                "w": query,
+                "semantic": "100",
+                "cr": "1",
+            }
+            headers = {**COMMON_HEADERS, "Referer": "https://y.qq.com/"}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        text = await resp.text(encoding="utf-8")
+                        data = json.loads(text)
+                        songs = data.get("data", {}).get("song", {}).get("list", [])
+                        for song in songs:
+                            artists = ", ".join(a.get("name", "") for a in song.get("singer", []))
+                            mid = song.get("songmid", "")
+                            results.append({
+                                "id": mid,
+                                "title": song.get("songname", "Unknown"),
+                                "artist": artists or "Unknown",
+                                "duration": song.get("interval", 0),
+                                "thumbnail": f"https://y.gtimg.cn/music/photo_new/T002R300x300M000{song.get('albummid','')}.jpg",
+                                "album": song.get("albumname", ""),
+                                "url": f"https://y.qq.com/n/ryqq/songDetail/{mid}",
+                                "source": self.name,
+                                "source_name": self.display_name,
+                                "format": "m4a/flac",
+                                "quality": "标准/无损",
+                            })
+        except Exception as e:
+            print(f"[QQ] Search error: {e}")
+        return results
+
+    async def get_stream(self, song_mid: str) -> dict:
+        try:
+            # 获取vkey播放URL
+            guid = "1234567890"
+            url = "https://u.y.qq.com/cgi-bin/musicu.fcgi"
+            params = {
+                "format": "json",
+                "data": json.dumps({
+                    "req": {"module": "CDN.SrfCdnDispatchServer", "method": "GetCdnDispatch", "param": {"guid": guid, "calltype": 0, "userip": ""}},
+                    "req_0": {"module": "vkey.GetVkeyServer", "method": "CgiGetVkey", "param": {"guid": guid, "songmid": [song_mid], "songtype": [0], "uin": "0", "loginflag": 1, "platform": "20"}},
+                    "comm": {"uin": 0, "format": "json", "ct": 24, "cv": 0},
+                }),
+            }
+            headers = {**COMMON_HEADERS, "Referer": "https://y.qq.com/"}
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(encoding="utf-8", content_type=None)
+                        info = data.get("req_0", {}).get("data", {}).get("midurlinfo", [{}])[0]
+                        purl = info.get("purl", "")
+                        if purl:
+                            stream_url = f"http://ws.stream.qqmusic.qq.com/{purl}"
+                            sip = data.get("req", {}).get("data", {}).get("sip", [""])
+                            if sip and "m10" in sip[0]:
+                                stream_url = f"https://aqqmusic.tc.qq.com/amobile.music.tc.qq.com/{purl}"
+                            return {
+                                "stream_url": stream_url,
+                                "title": "",
+                                "artist": "",
+                                "format": "m4a",
+                            }
+        except Exception as e:
+            print(f"[QQ] Stream error: {e}")
+        return {}
+
+
+class BilibiliSource(MusicSourceBase):
+    """B站 - 使用wbi搜索API"""
+    name = "bilibili"
+    display_name = "Bilibili"
+
+    async def search(self, query: str, limit: int = 20) -> list:
+        results = []
+        try:
+            url = "https://api.bilibili.com/x/web-interface/wbi/search/type"
+            params = {
+                "search_type": "video",
+                "keyword": query,
+                "page": "1",
+                "page_size": str(limit),
+                "order": "totalrank",
+            }
+            headers = {
+                **COMMON_HEADERS,
+                "Referer": "https://search.bilibili.com/all",
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status == 200:
+                        data = await resp.json(encoding="utf-8", content_type=None)
+                        if data.get("code") == 0:
+                            items = data.get("data", {}).get("result", [])
+                            for item in items:
+                                raw_title = item.get("title", "Unknown")
+                                import re as _re
+                                title = _re.sub(r'<[^>]+>', '', raw_title)
+                                author = item.get("author", "Unknown")
+                                duration_str = item.get("duration", "0")
+                                dur_parts = duration_str.split(":")
+                                dur_sec = int(dur_parts[0]) * 60 + int(dur_parts[1]) if len(dur_parts) == 2 else 0
+                                bvid = item.get("bvid", "")
+                                results.append({
+                                    "id": bvid,
+                                    "title": title,
+                                    "artist": author,
+                                    "duration": dur_sec,
+                                    "thumbnail": f"https:{item.get('pic', '')}" if item.get('pic', '').startswith('//') else item.get('pic', ''),
+                                    "url": f"https://www.bilibili.com/video/{bvid}",
+                                    "source": self.name,
+                                    "source_name": self.display_name,
+                                    "format": "m4a/flac",
+                                    "quality": "audio",
+                                })
+        except Exception as e:
+            print(f"[Bilibili] Search error: {e}")
+        return results
+
+    async def get_stream(self, bvid: str) -> dict:
+        url = f"https://www.bilibili.com/video/{bvid}"
+        opts = {**YDL_OPTS_BASE, "format": "bestaudio/best"}
+        try:
+            with yt_dlp.YoutubeDL(opts) as ydl:
+                info = ydl.extract_info(url, download=False)
+                audio_url = info.get("url", "")
+                if not audio_url:
+                    formats = info.get("formats", [])
+                    audio_formats = [f for f in formats if f.get("acodec") != "none"]
+                    if audio_formats:
+                        audio_formats.sort(key=lambda x: (x.get("tbr", 0) or 0), reverse=True)
+                        audio_url = audio_formats[0].get("url", "")
+                return {
+                    "stream_url": audio_url,
+                    "title": info.get("title", ""),
+                    "artist": info.get("channel", ""),
+                    "duration": info.get("duration", 0),
+                    "thumbnail": info.get("thumbnail", ""),
+                    "format": "m4a",
+                }
+        except Exception as e:
+            print(f"[Bilibili] Stream error: {e}")
+            return {}
+
 
 class YouTubeSource(MusicSourceBase):
     name = "youtube"
@@ -124,221 +348,79 @@ class YouTubeSource(MusicSourceBase):
             return {}
 
 
-class BilibiliSource(MusicSourceBase):
-    name = "bilibili"
-    display_name = "Bilibili"
-
-    async def search(self, query: str, limit: int = 20) -> list:
-        opts = {**YDL_OPTS_BASE, "default_search": "bilisearch", "extract_flat": True}
-        results = []
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(f"bilisearch{limit}:{query}", download=False)
-                entries = info.get("entries", []) if info else []
-                for entry in entries:
-                    if not entry:
-                        continue
-                    bvid = entry.get("id", "")
-                    results.append({
-                        "id": bvid,
-                        "title": entry.get("title", "Unknown"),
-                        "artist": entry.get("channel", entry.get("uploader", "Unknown")),
-                        "duration": entry.get("duration", 0),
-                        "thumbnail": entry.get("thumbnail", ""),
-                        "url": f"https://www.bilibili.com/video/{bvid}",
-                        "source": self.name,
-                        "source_name": self.display_name,
-                        "format": "m4a/flac",
-                        "quality": "audio",
-                    })
-        except Exception as e:
-            print(f"[Bilibili] Search error: {e}")
-        return results
-
-    async def get_stream(self, bvid: str) -> dict:
-        url = f"https://www.bilibili.com/video/{bvid}"
-        opts = {**YDL_OPTS_BASE, "format": "bestaudio/best"}
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                audio_url = info.get("url", "")
-                if not audio_url:
-                    formats = info.get("formats", [])
-                    audio_formats = [f for f in formats if f.get("acodec") != "none"]
-                    if audio_formats:
-                        audio_formats.sort(key=lambda x: tbr if (tbr := (f.get("tbr", 0) or 0)) else 0, reverse=True)
-                        audio_url = audio_formats[0].get("url", "")
-                return {
-                    "stream_url": audio_url,
-                    "title": info.get("title", ""),
-                    "artist": info.get("channel", ""),
-                    "duration": info.get("duration", 0),
-                    "thumbnail": info.get("thumbnail", ""),
-                    "format": "m4a",
-                }
-        except Exception as e:
-            print(f"[Bilibili] Stream error: {e}")
-            return {}
-
-
-class NetEaseSource(MusicSourceBase):
-    name = "netease"
-    display_name = "网易云音乐"
-    BASE_URL = "https://music.163.com"
+class CoolMicSource(MusicSourceBase):
+    """酷狗音乐 - 使用搜索API"""
+    name = "kugou"
+    display_name = "酷狗音乐"
 
     async def search(self, query: str, limit: int = 20) -> list:
         results = []
         try:
-            search_url = "https://music.163.com/api/search/get/web"
-            params = {"s": query, "type": 1, "offset": 0, "limit": limit}
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://music.163.com/",
+            url = "https://msearch.kugou.com/search/playlist"
+            params = {
+                "keyword": query,
+                "page": "1",
+                "pagesize": str(limit),
+                "userid": "0",
+                "clientver": "20000",
+                "platform": "WebFilter",
+                "tag": "",
+                "filter": "2",
+                "iscorrection": "1",
+                "privilege_filter": "0",
             }
+            headers = {**COMMON_HEADERS, "Referer": "https://www.kugou.com/"}
             async with aiohttp.ClientSession() as session:
-                async with session.post(search_url, data=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
-                        songs = data.get("result", {}).get("songs", [])
-                        for song in songs:
-                            artists = ", ".join(a.get("name", "") for a in song.get("artists", []))
-                            album = song.get("album", {})
+                        data = await resp.json(encoding="utf-8", content_type=None)
+                        lists = data.get("data", {}).get("lists", [])
+                        for item in lists:
                             results.append({
-                                "id": str(song.get("id", "")),
-                                "title": song.get("name", "Unknown"),
-                                "artist": artists or "Unknown",
-                                "duration": (song.get("duration", 0) or 0) // 1000,
-                                "thumbnail": album.get("picUrl", ""),
-                                "album": album.get("name", ""),
-                                "url": f"https://music.163.com/song?id={song.get('id', '')}",
+                                "id": str(item.get("FileHash", "")),
+                                "title": item.get("SongName", "Unknown").replace("<em>", "").replace("</em>", ""),
+                                "artist": item.get("SingerName", "Unknown").replace("<em>", "").replace("</em>", ""),
+                                "duration": int(item.get("Duration", 0)),
+                                "thumbnail": item.get("imgUrl", "").replace("{size}", "240") if item.get("imgUrl") else "",
+                                "album": item.get("AlbumName", ""),
                                 "source": self.name,
                                 "source_name": self.display_name,
                                 "format": "mp3/flac",
                                 "quality": "标准/无损",
                             })
         except Exception as e:
-            print(f"[NetEase] Search error: {e}")
+            print(f"[Kugou] Search error: {e}")
         return results
 
-    async def get_stream(self, song_id: str) -> dict:
+    async def get_stream(self, file_hash: str) -> dict:
         try:
-            url = "https://music.163.com/api/song/enhance/player/url"
-            params = {"ids": f"[{song_id}]", "br": 320000}
-            headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                "Referer": "https://music.163.com/",
-            }
+            url = "https://wwwapi.kugou.com/play/song/info"
+            params = {"hash": file_hash}
+            headers = {**COMMON_HEADERS, "Referer": "https://www.kugou.com/"}
             async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
-                        data = await resp.json()
-                        song_data = data.get("data", [{}])[0]
-                        stream_url = song_data.get("url", "")
+                        data = await resp.json(encoding="utf-8", content_type=None)
+                        play_url = data.get("data", {}).get("play_url", "")
                         return {
-                            "stream_url": stream_url,
-                            "title": "",
-                            "artist": "",
-                            "duration": song_data.get("time", 0) // 1000 if song_data.get("time") else 0,
-                            "format": song_data.get("type", "mp3"),
-                            "bitrate": song_data.get("br", 0),
+                            "stream_url": play_url,
+                            "title": data.get("data", {}).get("song_name", ""),
+                            "artist": data.get("data", {}).get("author_name", ""),
+                            "duration": data.get("data", {}).get("timelength", 0) // 1000,
+                            "format": "mp3",
                         }
         except Exception as e:
-            print(f"[NetEase] Stream error: {e}")
-            return {}
-
-
-class SoundCloudSource(MusicSourceBase):
-    name = "soundcloud"
-    display_name = "SoundCloud"
-
-    async def search(self, query: str, limit: int = 20) -> list:
-        opts = {**YDL_OPTS_BASE, "default_search": "scsearch", "extract_flat": True}
-        results = []
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(f"scsearch{limit}:{query}", download=False)
-                entries = info.get("entries", []) if info else []
-                for entry in entries:
-                    if not entry:
-                        continue
-                    results.append({
-                        "id": entry.get("id", ""),
-                        "title": entry.get("title", "Unknown"),
-                        "artist": entry.get("channel", entry.get("uploader", "Unknown")),
-                        "duration": entry.get("duration", 0),
-                        "thumbnail": entry.get("thumbnail", ""),
-                        "url": entry.get("webpage_url", f"https://soundcloud.com/{entry.get('id', '')}"),
-                        "source": self.name,
-                        "source_name": self.display_name,
-                        "format": "mp3/ogg",
-                        "quality": "audio",
-                    })
-        except Exception as e:
-            print(f"[SoundCloud] Search error: {e}")
-        return results
-
-    async def get_stream(self, track_id: str) -> dict:
-        opts = {**YDL_OPTS_BASE, "format": "bestaudio/best"}
-        url = f"https://soundcloud.com/{track_id}"
-        try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                return {
-                    "stream_url": info.get("url", ""),
-                    "title": info.get("title", ""),
-                    "artist": info.get("uploader", ""),
-                    "duration": info.get("duration", 0),
-                    "thumbnail": info.get("thumbnail", ""),
-                    "format": "mp3",
-                }
-        except Exception as e:
-            print(f"[SoundCloud] Stream error: {e}")
-            return {}
-
-
-class FreeMusicArchiveSource(MusicSourceBase):
-    name = "fma"
-    display_name = "Free Music Archive"
-
-    async def search(self, query: str, limit: int = 20) -> list:
-        results = []
-        try:
-            url = "https://freemusicarchive.org/api/get/songs.json"
-            params = {"api_key": "FMA_KEY_NOT_REQUIRED", "limit": limit, "q": query}
-            async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json()
-                        songs = data.get("dataset", [])
-                        for song in songs:
-                            results.append({
-                                "id": str(song.get("song_id", "")),
-                                "title": song.get("song_title", "Unknown"),
-                                "artist": song.get("artist_name", "Unknown"),
-                                "duration": 0,
-                                "thumbnail": song.get("song_image_file", ""),
-                                "url": song.get("song_url", ""),
-                                "stream_url": song.get("song_url", ""),
-                                "source": self.name,
-                                "source_name": self.display_name,
-                                "format": "mp3",
-                                "quality": "free",
-                            })
-        except Exception as e:
-            print(f"[FMA] Search error: {e}")
-        return results
-
-    async def get_stream(self, song_id: str) -> dict:
+            print(f"[Kugou] Stream error: {e}")
         return {}
 
 
 # ─── 音乐源管理器 ───────────────────────────────────────
 SOURCES = {
-    "youtube": YouTubeSource(),
-    "bilibili": BilibiliSource(),
     "netease": NetEaseSource(),
-    "soundcloud": SoundCloudSource(),
-    "fma": FreeMusicArchiveSource(),
+    "qq": QQMusicSource(),
+    "bilibili": BilibiliSource(),
+    "kugou": CoolMicSource(),
+    "youtube": YouTubeSource(),
 }
 
 
@@ -388,9 +470,9 @@ async def _fetch_rec(src_cls, query, limit, key, title, source_key):
 async def get_recommendations() -> dict:
     tasks = [
         _fetch_rec(NetEaseSource, "热门歌曲 2024 2025", 10, "netease_hot", "🔥 网易云热歌榜", "netease"),
-        _fetch_rec(YouTubeSource, "popular music 2025", 10, "youtube_popular", "🎵 YouTube 热门音乐", "youtube"),
+        _fetch_rec(QQMusicSource, "热门歌曲 2025", 10, "qq_hot", "💚 QQ音乐热歌榜", "qq"),
+        _fetch_rec(CoolMicSource, "热门歌曲 2025", 10, "kugou_hot", "🎵 酷狗音乐榜", "kugou"),
         _fetch_rec(BilibiliSource, "音乐推荐 无损", 10, "bilibili_music", "🎶 B站音乐精选", "bilibili"),
-        _fetch_rec(SoundCloudSource, "trending music", 10, "soundcloud_trending", "🎧 SoundCloud 趋势", "soundcloud"),
     ]
     results = await asyncio.gather(*tasks)
     return dict(results)
@@ -803,11 +885,11 @@ img{-webkit-user-drag:none}
   <!-- SOURCE TABS -->
   <div class="src-tabs" id="srcTabs">
     <button class="src-tab active" data-src="all" onclick="switchSrc(this)">🌐 全部</button>
-    <button class="src-tab" data-src="youtube" onclick="switchSrc(this)">📺 YouTube</button>
-    <button class="src-tab" data-src="bilibili" onclick="switchSrc(this)">📹 哔哩哔哩</button>
     <button class="src-tab" data-src="netease" onclick="switchSrc(this)">☁️ 网易云</button>
-    <button class="src-tab" data-src="soundcloud" onclick="switchSrc(this)">🎧 SoundCloud</button>
-    <button class="src-tab" data-src="fma" onclick="switchSrc(this)">🎼 FMA</button>
+    <button class="src-tab" data-src="qq" onclick="switchSrc(this)">🐧 QQ音乐</button>
+    <button class="src-tab" data-src="kugou" onclick="switchSrc(this)">🎵 酷狗</button>
+    <button class="src-tab" data-src="bilibili" onclick="switchSrc(this)">📹 哔哩哔哩</button>
+    <button class="src-tab" data-src="youtube" onclick="switchSrc(this)">📺 YouTube</button>
   </div>
 
   <!-- VIEWS -->
@@ -1034,7 +1116,7 @@ function renderRecs(){
   document.getElementById('homeLoading').style.display='none';
   const c=document.getElementById('homeContent');
   let html='<div class="rec-grid fade-in">';
-  const colors={'netease':'#e74c3c','youtube':'#ff6b6b','bilibili':'#fb7299','soundcloud':'#f50'};
+  const colors={'netease':'#e74c3c','qq':'#31c27c','kugou':'#2daafc','bilibili':'#fb7299','youtube':'#ff6b6b'};
   for(const[k,rec] of Object.entries(S.recs)){
     if(!rec.items||!rec.items.length)continue;
     const dotColor=colors[rec.source]||'var(--accent)';
