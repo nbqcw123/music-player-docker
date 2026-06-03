@@ -5,6 +5,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    image: music-player:latest
     container_name: music-player
     ports:
       - "8080:8080"
@@ -12,6 +13,16 @@ services:
       - PORT=8080
       - CACHE_DIR=/tmp/music_cache
       - TZ=Asia/Shanghai
+      # ── 网盘配置（可选）──
+      # 百度网盘：access_token 或 cookie 二选一
+      # - BAIDUPAN_ACCESS_TOKEN=你的百度网盘access_token
+      # - BAIDUPAN_COOKIE=你的百度网盘cookie
+      # 阿里云盘：refresh_token 或 access_token 或 cookie 三选一
+      # - ALIYUN_REFRESH_TOKEN=你的阿里云盘refresh_token
+      # - ALIYUN_ACCESS_TOKEN=你的阿里云盘access_token
+      # - ALIYUN_COOKIE=你的阿里云盘cookie
+      # 夸克网盘：需要 cookie
+      # - QUARK_COOKIE=你的夸克网盘cookie
     volumes:
       - music_cache:/tmp/music_cache
     restart: unless-stopped

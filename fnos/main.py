@@ -19,6 +19,249 @@ from fastapi.responses import HTMLResponse, StreamingResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
+# ─── 网盘音乐模块 ───────────────────────────────────────
+import hashlib as _hashlib
+
+class NetDiskBase:
+    """网盘基类"""
+    name = "base"
+    display_name = "Base"
+    AUDIO_EXT = {'.mp3', '.flac', '.wav', '.m4a', '.aac', '.ogg', '.ape', '.wma'}
+
+    async def search_music(self, keyword: str, limit: int = 20) -> list:
+        raise NotImplementedError
+
+    async def get_download_url(self, file_id: str) -> str:
+        raise NotImplementedError
+
+
+class BaiduPanSource(NetDiskBase):
+    """百度网盘"""
+    name = "baidupan"
+    display_name = "百度网盘"
+
+    def __init__(self, access_token: str = "", cookie: str = ""):
+        self.access_token = access_token
+        self.cookie = cookie
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }
+        if cookie:
+            self.headers["Cookie"] = cookie
+
+    async def search_music(self, keyword: str, limit: int = 20) -> list:
+        results = []
+        try:
+            url = "https://pan.baidu.com/rest/2.0/xpan/file"
+            params = {
+                "method": "search",
+                "key": keyword,
+                "dir": "/",
+                "page": "1",
+                "num": str(limit * 3),
+                "recursion": "1",
+                "access_token": self.access_token,
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, headers=self.headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    text = await resp.text(encoding="utf-8")
+                    data = json.loads(text)
+                    if data.get("errno") == 0:
+                        for item in data.get("list", []):
+                            name = item.get("server_filename", "")
+                            ext = __import__("os").path.splitext(name)[1].lower()
+                            if ext in self.AUDIO_EXT:
+                                results.append({
+                                    "id": str(item.get("fs_id", "")),
+                                    "title": __import__("os").path.splitext(name)[0],
+                                    "artist": "", "duration": 0, "thumbnail": "",
+                                    "size": item.get("size", 0),
+                                    "source": self.name, "source_name": self.display_name,
+                                    "format": ext.lstrip("."), "quality": "原始",
+                                })
+                                if len(results) >= limit:
+                                    break
+                    else:
+                        print(f"[BaiduPan] search errno={data.get('errno')}")
+        except Exception as e:
+            print(f"[BaiduPan] search error: {e}")
+        return results
+
+    async def get_download_url(self, file_id: str) -> str:
+        try:
+            url = "https://pan.baidu.com/rest/2.0/xpan/multimedia"
+            params = {
+                "method": "filemetas",
+                "fsids": json.dumps([int(file_id)]),
+                "dlink": "1",
+                "access_token": self.access_token,
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(url, params=params, headers=self.headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    data = json.loads(await resp.text(encoding="utf-8"))
+                    if data.get("errno") == 0:
+                        items = data.get("info", [])
+                        if items:
+                            return items[0].get("dlink", "")
+        except Exception as e:
+            print(f"[BaiduPan] download error: {e}")
+        return ""
+
+
+class AliYunDriveSource(NetDiskBase):
+    """阿里云盘"""
+    name = "aliyun"
+    display_name = "阿里云盘"
+
+    def __init__(self, access_token: str = "", refresh_token: str = "", cookie: str = ""):
+        self.access_token = access_token
+        self.refresh_token = refresh_token
+        self.cookie = cookie
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Content-Type": "application/json",
+        }
+        if access_token:
+            self.headers["Authorization"] = f"Bearer {access_token}"
+        if cookie:
+            self.headers["Cookie"] = cookie
+
+    async def search_music(self, keyword: str, limit: int = 20) -> list:
+        results = []
+        try:
+            url = "https://api.aliyundrive.com/adrive/v3/file/list"
+            payload = {
+                "drive_id": "default",
+                "limit": limit * 3,
+                "order_by": "name ASC",
+                "query": f'name match "{keyword}"',
+                "type": "file",
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=self.headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    data = await resp.json(content_type=None)
+                    for item in data.get("items", []):
+                        name = item.get("name", "")
+                        ext = __import__("os").path.splitext(name)[1].lower()
+                        if ext in self.AUDIO_EXT:
+                            results.append({
+                                "id": item.get("file_id", ""),
+                                "title": __import__("os").path.splitext(name)[0],
+                                "artist": "", "duration": 0, "thumbnail": "",
+                                "size": item.get("size", 0),
+                                "source": self.name, "source_name": self.display_name,
+                                "format": ext.lstrip("."), "quality": "原始",
+                            })
+                            if len(results) >= limit:
+                                break
+        except Exception as e:
+            print(f"[AliYun] search error: {e}")
+        return results
+
+    async def get_download_url(self, file_id: str) -> str:
+        try:
+            url = "https://api.aliyundrive.com/v2/file/get_download_url"
+            payload = {"drive_id": "default", "file_id": file_id}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=self.headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    data = await resp.json(content_type=None)
+                    return data.get("url", "")
+        except Exception as e:
+            print(f"[AliYun] download error: {e}")
+        return ""
+
+
+class QuarkPanSource(NetDiskBase):
+    """夸克网盘"""
+    name = "quark"
+    display_name = "夸克网盘"
+
+    def __init__(self, cookie: str = ""):
+        self.cookie = cookie
+        self.headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Content-Type": "application/json",
+        }
+        if cookie:
+            self.headers["Cookie"] = cookie
+
+    async def search_music(self, keyword: str, limit: int = 20) -> list:
+        results = []
+        try:
+            url = "https://drive.quark.cn/1/clouddrive/file/search"
+            payload = {"key": keyword, "pdir_fid": "0"}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=self.headers, timeout=aiohttp.ClientTimeout(total=15)) as resp:
+                    data = await resp.json(content_type=None)
+                    if data.get("code") == 0:
+                        for item in data.get("data", {}).get("list", []):
+                            name = item.get("file_name", "")
+                            ext = __import__("os").path.splitext(name)[1].lower()
+                            if ext in self.AUDIO_EXT:
+                                results.append({
+                                    "id": item.get("fid", ""),
+                                    "title": __import__("os").path.splitext(name)[0],
+                                    "artist": "", "duration": 0, "thumbnail": "",
+                                    "size": item.get("size", 0),
+                                    "source": self.name, "source_name": self.display_name,
+                                    "format": ext.lstrip("."), "quality": "原始",
+                                })
+                                if len(results) >= limit:
+                                    break
+                    else:
+                        print(f"[Quark] search code={data.get('code')}")
+        except Exception as e:
+            print(f"[Quark] search error: {e}")
+        return results
+
+    async def get_download_url(self, file_id: str) -> str:
+        try:
+            url = "https://drive.quark.cn/1/clouddrive/file/download"
+            payload = {"fid": file_id, "pdir_fid": "0"}
+            async with aiohttp.ClientSession() as session:
+                async with session.post(url, json=payload, headers=self.headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    data = await resp.json(content_type=None)
+                    if data.get("code") == 0:
+                        return data.get("data", {}).get("download_url", "")
+        except Exception as e:
+            print(f"[Quark] download error: {e}")
+        return ""
+
+
+# 网盘管理器实例（延迟初始化）
+_netdisk_manager = None
+
+def get_netdisk_manager():
+    global _netdisk_manager
+    if _netdisk_manager is None:
+        _netdisk_manager = _init_netdisk_manager()
+    return _netdisk_manager
+
+def _init_netdisk_manager():
+    """从环境变量/配置文件初始化网盘"""
+    sources = {}
+    
+    # 百度网盘
+    bd_token = os.getenv("BAIDUPAN_ACCESS_TOKEN", "")
+    bd_cookie = os.getenv("BAIDUPAN_COOKIE", "")
+    if bd_token or bd_cookie:
+        sources["baidupan"] = BaiduPanSource(access_token=bd_token, cookie=bd_cookie)
+    
+    # 阿里云盘
+    ali_token = os.getenv("ALIYUN_ACCESS_TOKEN", "")
+    ali_refresh = os.getenv("ALIYUN_REFRESH_TOKEN", "")
+    ali_cookie = os.getenv("ALIYUN_COOKIE", "")
+    if ali_token or ali_refresh or ali_cookie:
+        sources["aliyun"] = AliYunDriveSource(access_token=ali_token, refresh_token=ali_refresh, cookie=ali_cookie)
+    
+    # 夸克
+    quark_cookie = os.getenv("QUARK_COOKIE", "")
+    if quark_cookie:
+        sources["quark"] = QuarkPanSource(cookie=quark_cookie)
+    
+    return sources
+
+
 app = FastAPI(
     title="Music Player Docker",
     description="在线音乐播放器 - 支持多源搜索、无损格式、SPA界面",
@@ -111,45 +354,48 @@ class NetEaseSource(MusicSourceBase):
 
     async def get_stream(self, song_id: str) -> dict:
         try:
-            url = "https://music.163.com/api/song/enhance/player/url/v1"
-            params = {"ids": f"[{song_id}]", "level": "standard", "encodeType": "flac"}
-            headers = {**COMMON_HEADERS, "Referer": "https://music.163.com/"}
-            async with aiohttp.ClientSession() as session:
-                async with session.post(url, data=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
-                    if resp.status == 200:
-                        data = await resp.json(encoding="utf-8", content_type=None)
-                        items = data.get("data", [])
-                        if items:
-                            item = items[0]
-                            stream_url = item.get("url", "")
-                            return {
-                                "stream_url": stream_url,
-                                "title": "",
-                                "artist": "",
-                                "duration": (item.get("time", 0) or 0) // 1000,
-                                "format": item.get("type", "mp3"),
-                                "bitrate": item.get("br", 0),
-                            }
+            # 尝试多个音质级别
+            for level, enc in [("standard", "mp3"), ("higher", "mp3"), ("exhigh", "flac"), ("lossless", "flac")]:
+                url = "https://music.163.com/api/song/enhance/player/url/v1"
+                params = {"ids": f"[{song_id}]", "level": level, "encodeType": enc}
+                headers = {**COMMON_HEADERS, "Referer": "https://music.163.com/"}
+                async with aiohttp.ClientSession() as session:
+                    async with session.post(url, data=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                        if resp.status == 200:
+                            text = await resp.text(encoding="utf-8")
+                            data = json.loads(text)
+                            items = data.get("data", [])
+                            if items:
+                                item = items[0]
+                                stream_url = item.get("url", "")
+                                if stream_url:
+                                    return {
+                                        "stream_url": stream_url,
+                                        "title": "",
+                                        "artist": "",
+                                        "duration": (item.get("time", 0) or 0) // 1000,
+                                        "format": item.get("type", "mp3"),
+                                        "bitrate": item.get("br", 0),
+                                    }
         except Exception as e:
             print(f"[NetEase] Stream error: {e}")
         return {}
 
 
 class QQMusicSource(MusicSourceBase):
-    """QQ音乐 - 使用搜索API"""
+    """QQ音乐 - 使用shc搜索API"""
     name = "qq"
     display_name = "QQ音乐"
 
     async def search(self, query: str, limit: int = 20) -> list:
         results = []
         try:
-            url = "https://c.y.qq.com/soso/fcgi-bin/client_search_cp"
+            url = "https://shc.y.qq.com/soso/fcgi-bin/search_for_qq_cp"
             params = {
                 "format": "json",
                 "p": "1",
                 "n": str(limit),
                 "w": query,
-                "semantic": "100",
                 "cr": "1",
             }
             headers = {**COMMON_HEADERS, "Referer": "https://y.qq.com/"}
@@ -157,10 +403,16 @@ class QQMusicSource(MusicSourceBase):
                 async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
                         text = await resp.text(encoding="utf-8")
+                        if not text or not text.strip():
+                            return results
                         data = json.loads(text)
                         songs = data.get("data", {}).get("song", {}).get("list", [])
                         for song in songs:
-                            artists = ", ".join(a.get("name", "") for a in song.get("singer", []))
+                            singers = song.get("singer", [])
+                            if isinstance(singers, list):
+                                artists = ", ".join(s.get("name", "") for s in singers)
+                            else:
+                                artists = str(singers)
                             mid = song.get("songmid", "")
                             results.append({
                                 "id": mid,
@@ -181,16 +433,32 @@ class QQMusicSource(MusicSourceBase):
 
     async def get_stream(self, song_mid: str) -> dict:
         try:
-            # 获取vkey播放URL
+            # 获取vkey播放URL - 使用简化API
             guid = "1234567890"
-            url = "https://u.y.qq.com/cgi-bin/musicu.fcgi"
+            url = "https://u.y.qq.com/cgi-bin/musicu.fcg"
+            data_payload = {
+                "req_0": {
+                    "module": "vkey.GetVkeyServer",
+                    "method": "CgiGetVkey",
+                    "param": {
+                        "guid": guid,
+                        "songmid": [song_mid],
+                        "songtype": [0],
+                        "uin": "0",
+                        "loginflag": 1,
+                        "platform": "20",
+                    },
+                },
+                "comm": {"uin": 0, "format": "json", "ct": 24, "cv": 0},
+            }
             params = {
                 "format": "json",
-                "data": json.dumps({
-                    "req": {"module": "CDN.SrfCdnDispatchServer", "method": "GetCdnDispatch", "param": {"guid": guid, "calltype": 0, "userip": ""}},
-                    "req_0": {"module": "vkey.GetVkeyServer", "method": "CgiGetVkey", "param": {"guid": guid, "songmid": [song_mid], "songtype": [0], "uin": "0", "loginflag": 1, "platform": "20"}},
-                    "comm": {"uin": 0, "format": "json", "ct": 24, "cv": 0},
-                }),
+                "inCharset": "utf-8",
+                "outCharset": "utf-8",
+                "notice": "0",
+                "platform": "yqq.json",
+                "needNewCode": "0",
+                "data": json.dumps(data_payload),
             }
             headers = {**COMMON_HEADERS, "Referer": "https://y.qq.com/"}
             async with aiohttp.ClientSession() as session:
@@ -200,10 +468,11 @@ class QQMusicSource(MusicSourceBase):
                         info = data.get("req_0", {}).get("data", {}).get("midurlinfo", [{}])[0]
                         purl = info.get("purl", "")
                         if purl:
-                            stream_url = f"http://ws.stream.qqmusic.qq.com/{purl}"
-                            sip = data.get("req", {}).get("data", {}).get("sip", [""])
-                            if sip and "m10" in sip[0]:
-                                stream_url = f"https://aqqmusic.tc.qq.com/amobile.music.tc.qq.com/{purl}"
+                            sip_list = data.get("req_0", {}).get("data", {}).get("sip", [])
+                            base_url = sip_list[0] if sip_list else "http://ws.stream.qqmusic.qq.com/"
+                            if not base_url.endswith("/"):
+                                base_url += "/"
+                            stream_url = f"{base_url}{purl}"
                             return {
                                 "stream_url": stream_url,
                                 "title": "",
@@ -297,6 +566,9 @@ class YouTubeSource(MusicSourceBase):
     display_name = "YouTube"
 
     async def search(self, query: str, limit: int = 20) -> list:
+        # YouTube 在国内不可用，快速返回空结果
+        return []
+        # 以下代码保留供代理环境使用
         opts = {**YDL_OPTS_BASE, "default_search": "ytsearch", "extract_flat": True}
         results = []
         try:
@@ -323,6 +595,9 @@ class YouTubeSource(MusicSourceBase):
         return results
 
     async def get_stream(self, video_id: str) -> dict:
+        # YouTube 在国内不可用
+        return {}
+        # 以下代码保留供代理环境使用
         url = f"https://www.youtube.com/watch?v={video_id}"
         opts = {**YDL_OPTS_BASE, "format": "bestaudio[ext=m4a]/bestaudio[ext=webm]/bestaudio/best"}
         try:
@@ -349,40 +624,46 @@ class YouTubeSource(MusicSourceBase):
 
 
 class CoolMicSource(MusicSourceBase):
-    """酷狗音乐 - 使用搜索API"""
+    """酷狗音乐 - 使用移动端API"""
     name = "kugou"
     display_name = "酷狗音乐"
 
     async def search(self, query: str, limit: int = 20) -> list:
         results = []
         try:
-            url = "https://msearch.kugou.com/search/playlist"
+            url = "https://mobilecdn.kugou.com/api/v3/search/song"
             params = {
+                "format": "json",
                 "keyword": query,
                 "page": "1",
                 "pagesize": str(limit),
-                "userid": "0",
-                "clientver": "20000",
-                "platform": "WebFilter",
-                "tag": "",
-                "filter": "2",
-                "iscorrection": "1",
-                "privilege_filter": "0",
+                "showtype": "1",
             }
-            headers = {**COMMON_HEADERS, "Referer": "https://www.kugou.com/"}
+            headers = {
+                "User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 16_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.0 Mobile/15E148 Safari/604.1",
+                "Referer": "https://www.kugou.com/",
+            }
+            # 酷狗移动端API有SSL证书问题，需要禁用验证
+            import ssl as _ssl
+            ctx = _ssl.create_default_context()
+            ctx.check_hostname = False
+            ctx.verify_mode = _ssl.CERT_NONE
             async with aiohttp.ClientSession() as session:
-                async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10), ssl=ctx) as resp:
                     if resp.status == 200:
-                        data = await resp.json(encoding="utf-8", content_type=None)
-                        lists = data.get("data", {}).get("lists", [])
-                        for item in lists:
+                        text = await resp.text(encoding="utf-8")
+                        if not text or not text.strip():
+                            return results
+                        data = json.loads(text)
+                        info = data.get("data", {}).get("info", [])
+                        for item in info:
                             results.append({
-                                "id": str(item.get("FileHash", "")),
-                                "title": item.get("SongName", "Unknown").replace("<em>", "").replace("</em>", ""),
-                                "artist": item.get("SingerName", "Unknown").replace("<em>", "").replace("</em>", ""),
-                                "duration": int(item.get("Duration", 0)),
-                                "thumbnail": item.get("imgUrl", "").replace("{size}", "240") if item.get("imgUrl") else "",
-                                "album": item.get("AlbumName", ""),
+                                "id": str(item.get("hash", "")),
+                                "title": item.get("songname", "Unknown"),
+                                "artist": item.get("singername", "Unknown"),
+                                "duration": int(item.get("duration", 0)),
+                                "thumbnail": "",
+                                "album": item.get("album_name", ""),
                                 "source": self.name,
                                 "source_name": self.display_name,
                                 "format": "mp3/flac",
@@ -394,21 +675,24 @@ class CoolMicSource(MusicSourceBase):
 
     async def get_stream(self, file_hash: str) -> dict:
         try:
-            url = "https://wwwapi.kugou.com/play/song/info"
-            params = {"hash": file_hash}
+            url = "https://wwwapi.kugou.com/yy/index.php"
+            params = {"r": "play/getdata", "hash": file_hash}
             headers = {**COMMON_HEADERS, "Referer": "https://www.kugou.com/"}
             async with aiohttp.ClientSession() as session:
                 async with session.get(url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
                     if resp.status == 200:
-                        data = await resp.json(encoding="utf-8", content_type=None)
-                        play_url = data.get("data", {}).get("play_url", "")
-                        return {
-                            "stream_url": play_url,
-                            "title": data.get("data", {}).get("song_name", ""),
-                            "artist": data.get("data", {}).get("author_name", ""),
-                            "duration": data.get("data", {}).get("timelength", 0) // 1000,
-                            "format": "mp3",
-                        }
+                        text = await resp.text(encoding="utf-8")
+                        data = json.loads(text)
+                        song_data = data.get("data", {})
+                        play_url = song_data.get("play_url", "")
+                        if play_url:
+                            return {
+                                "stream_url": play_url,
+                                "title": song_data.get("song_name", ""),
+                                "artist": song_data.get("author_name", ""),
+                                "duration": (song_data.get("timelength", 0) or 0) // 1000,
+                                "format": "mp3",
+                            }
         except Exception as e:
             print(f"[Kugou] Stream error: {e}")
         return {}
@@ -422,6 +706,11 @@ SOURCES = {
     "kugou": CoolMicSource(),
     "youtube": YouTubeSource(),
 }
+
+# 网盘音源（动态添加）
+def get_netdisk_sources():
+    mgr = get_netdisk_manager()
+    return {name: src for name, src in mgr.items()}
 
 
 class SourceManager:
@@ -485,7 +774,12 @@ async def root():
 
 @app.get("/api/sources")
 async def list_sources():
-    return {"sources": [{"key": k, "name": v.display_name} for k, v in SOURCES.items()]}
+    sources = [{"key": k, "name": v.display_name} for k, v in SOURCES.items()]
+    # 添加已配置的网盘
+    netdisk = get_netdisk_manager()
+    for name, src in netdisk.items():
+        sources.append({"key": src.name, "name": src.display_name})
+    return {"sources": sources}
 
 
 @app.get("/api/search")
@@ -499,7 +793,37 @@ async def search_music(
     else:
         sources = [source]
     results = await source_manager.search_all(q, sources, limit)
+    
+    # 同时搜索网盘
+    netdisk = get_netdisk_manager()
+    if netdisk:
+        try:
+            nd_results = await asyncio.wait_for(
+                _search_netdisk(netdisk, q, limit),
+                timeout=15
+            )
+            results.update(nd_results)
+        except asyncio.TimeoutError:
+            print("[Search] netdisk timeout")
+        except Exception as e:
+            print(f"[Search] netdisk error: {e}")
+    
     return {"query": q, "results": results}
+
+async def _search_netdisk(netdisk: dict, keyword: str, limit: int) -> dict:
+    """搜索所有已配置网盘"""
+    tasks = {}
+    for name, src in netdisk.items():
+        tasks[name] = asyncio.create_task(src.search_music(keyword, limit))
+    results = {}
+    for name, task in tasks.items():
+        try:
+            items = await asyncio.wait_for(task, timeout=12)
+            results[name] = items
+        except Exception as e:
+            print(f"[NetDisk] {name} error: {e}")
+            results[name] = []
+    return results
 
 
 @app.get("/api/stream")
@@ -507,6 +831,14 @@ async def get_stream_url(
     source: str = Query(..., description="音乐源"),
     id: str = Query(..., description="音乐ID或URL"),
 ):
+    # 网盘播放
+    netdisk = get_netdisk_manager()
+    if source in netdisk:
+        url = await netdisk[source].get_download_url(id)
+        if url:
+            return {"stream_url": url, "title": "", "artist": "", "format": "audio"}
+        raise HTTPException(status_code=404, detail="无法获取网盘下载链接")
+    
     stream_info = await source_manager.get_stream(source, id)
     if not stream_info or not stream_info.get("stream_url"):
         raise HTTPException(status_code=404, detail="无法获取播放地址")
@@ -869,7 +1201,7 @@ img{-webkit-user-drag:none}
 
   <!-- TOP NAV -->
   <nav class="topnav">
-    <div class="logo">🎵 Music Player</div>
+    <div class="logo">🎵 Music Player <span id="versionBadge" style="font-size:.5em;font-weight:400;opacity:.6;vertical-align:middle;margin-left:4px">v0.3.1</span></div>
     <div class="nav-links">
       <button class="nav-link active" onclick="switchView('home',this)">🏠 首页</button>
       <button class="nav-link" onclick="switchView('search',this)">🔍 搜索</button>
@@ -889,7 +1221,10 @@ img{-webkit-user-drag:none}
     <button class="src-tab" data-src="qq" onclick="switchSrc(this)">🐧 QQ音乐</button>
     <button class="src-tab" data-src="kugou" onclick="switchSrc(this)">🎵 酷狗</button>
     <button class="src-tab" data-src="bilibili" onclick="switchSrc(this)">📹 哔哩哔哩</button>
-    <button class="src-tab" data-src="youtube" onclick="switchSrc(this)">📺 YouTube</button>
+    <button class="src-tab" data-src="youtube" onclick="switchSrc(this)" title="需代理">📺 YouTube 🔒</button>
+    <button class="src-tab" data-src="baidupan" onclick="switchSrc(this)" id="tab-baidupan" style="display:none">📁 百度网盘</button>
+    <button class="src-tab" data-src="aliyun" onclick="switchSrc(this)" id="tab-aliyun" style="display:none">☁️ 阿里云盘</button>
+    <button class="src-tab" data-src="quark" onclick="switchSrc(this)" id="tab-quark" style="display:none">🍐 夸克网盘</button>
   </div>
 
   <!-- VIEWS -->
@@ -1005,6 +1340,18 @@ document.addEventListener('DOMContentLoaded',()=>{
   S.audio.addEventListener('pause',()=>{S.isPlaying=false;onStateChange()});
   loadRecommendations();
   loadHistory();
+  // 动态获取版本号
+  fetch('/').then(r=>r.json()).then(d=>{
+    const b=document.getElementById('versionBadge');
+    if(b&&d.version) b.textContent='v'+d.version;
+  }).catch(()=>{});
+  // 动态显示已配置的网盘标签
+  fetch('/api/sources').then(r=>r.json()).then(d=>{
+    (d.sources||[]).forEach(s=>{
+      const tab=document.getElementById('tab-'+s.name);
+      if(tab) tab.style.display='';
+    });
+  }).catch(()=>{});
   document.addEventListener('keydown',onKey);
   renderNP();
 });
@@ -1116,7 +1463,7 @@ function renderRecs(){
   document.getElementById('homeLoading').style.display='none';
   const c=document.getElementById('homeContent');
   let html='<div class="rec-grid fade-in">';
-  const colors={'netease':'#e74c3c','qq':'#31c27c','kugou':'#2daafc','bilibili':'#fb7299','youtube':'#ff6b6b'};
+  const colors={'netease':'#e74c3c','qq':'#31c27c','kugou':'#2daafc','bilibili':'#fb7299','youtube':'#ff6b6b','baidupan':'#3285ff','aliyun':'#ff6a00','quark':'#6c5ce7'};
   for(const[k,rec] of Object.entries(S.recs)){
     if(!rec.items||!rec.items.length)continue;
     const dotColor=colors[rec.source]||'var(--accent)';
