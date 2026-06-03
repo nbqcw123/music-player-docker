@@ -19,55 +19,73 @@
 - 📜 **播放历史** - localStorage 持久化，最多100条
 - ⌨️ **键盘快捷键** - 空格播放/暂停、左右快进/快退、M静音、S聚焦搜索
 - 🐳 **Docker 部署** - 一键启动，开箱即用
-- 🏠 **飞牛 NAS** - 专为飞牛 NAS 优化，支持本地构建
+- 🏠 **NAS 支持** - 飞牛 NAS / 群辉 NAS 均支持
 
 ## 🚀 快速开始
 
-### ⚠️ 国内用户（推荐源码构建）
-
-由于 Docker Hub 在国内访问不稳定，**推荐从 GitHub 源码构建**：
+### 通用 Docker 部署（最新版本）
 
 ```bash
-# 1. 克隆项目
+# 1. 拉取最新代码
 git clone https://github.com/nbqcw123/music-player-docker.git
 cd music-player-docker
 
-# 2. 构建镜像（约 3-5 分钟，首次构建后后续可去掉 --no-cache）
-docker build --no-cache -t music-player:dev .
+# 2. 构建镜像（首次加 --no-cache）
+docker build --no-cache -t music-player:latest .
 
 # 3. 运行容器
-docker run -d -p 8080:8080 --name music-player music-player:dev
+docker run -d -p 8080:8080 --name music-player music-player:latest
 
-# 4. 访问 http://你的NAS地址:8080/player
+# 4. 访问 http://localhost:8080/player
 ```
 
-> **注意**：首次构建必须加 `--no-cache`，否则可能使用旧缓存导致版本号不正确。后续更新只需 `docker build -t music-player:dev .` 即可。
-
-### 飞牛 NAS 安装
-
-详见 [`fnos/安装说明.md`](fnos/安装说明.md)，支持飞牛 Docker 管理界面导入和 SSH 命令行两种方式。
-
-飞牛 NAS 专用构建：
-```bash
-cd music-player-docker/fnos
-docker build --no-cache -t music-player:dev .
-```
-
-### Docker Compose（国际用户）
+### 指定版本部署
 
 ```bash
+# 克隆并切换到指定 tag
 git clone https://github.com/nbqcw123/music-player-docker.git
 cd music-player-docker
-docker-compose up -d
+git checkout v0.3.1
+
+# 构建
+docker build --no-cache -t music-player:0.3.1 .
+
+# 运行
+docker run -d -p 8080:8080 --name music-player music-player:0.3.1
 ```
 
-### 本地开发
+### Docker Compose
 
 ```bash
-cd backend
-pip install -r requirements.txt
-python main.py
+docker compose up -d
 ```
+
+---
+
+## 🏠 NAS 安装指南
+
+### 飞牛 NAS (FnOS)
+
+详见 [`fnos/安装说明.md`](fnos/安装说明.md)
+
+```bash
+cd fnos
+docker build --no-cache -t music-player:latest .
+docker compose up -d
+```
+
+### 群辉 NAS (Synology)
+
+详见 [`synology/安装说明.md`](synology/安装说明.md)
+
+```bash
+# SSH 登录群辉后
+cd /volume1/docker/music-player
+sudo docker compose build --no-cache
+sudo docker compose up -d
+```
+
+---
 
 ## 📖 使用说明
 
@@ -111,7 +129,12 @@ music-player-docker/
 ├── fnos/
 │   ├── main.py           # 飞牛 NAS 专用主应用
 │   ├── Dockerfile        # 飞牛 NAS 专用 Dockerfile
+│   ├── docker-compose.yml # 飞牛 NAS Docker Compose
 │   └── 安装说明.md       # 飞牛 NAS 安装指南
+├── synology/
+│   ├── Dockerfile        # 群辉 NAS 专用 Dockerfile
+│   ├── docker-compose.yml # 群辉 NAS Docker Compose
+│   └── 安装说明.md       # 群辉 NAS 安装指南
 ├── Dockerfile            # Docker 构建文件
 ├── docker-compose.yml    # Docker Compose 配置
 ├── CHANGELOG.md          # 更新日志
@@ -122,8 +145,9 @@ music-player-docker/
 
 ### v0.3.1 (2026-06-03)
 - 🐛 修复版本号 API 返回值（之前硬编码为 0.2.0-spa）
-- 🐛 修复 Docker 构建缓存导致旧版本问题（添加 --no-cache 说明）
+- 🐛 修复 Docker 构建缓存导致旧版本问题
 - 📝 更新 README 至最新版本
+- 🏠 新增群辉 NAS 安装支持
 
 ### v0.3.0 (2026-06-03)
 - 🐛 修复网易云搜索API（改用 `api/cloudsearch/pc`）

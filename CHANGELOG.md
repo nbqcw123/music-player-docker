@@ -1,3 +1,19 @@
+# v0.3.2 (2026-06-03)
+
+## 群辉 NAS 支持 + 版本管理
+
+### 新增
+- 🏠 **群辉 NAS (Synology) 支持** — 新增 `synology/` 目录，含专用 Dockerfile、docker-compose.yml、安装说明
+- 📦 **版本管理** — 默认构建最新版本，支持通过 git tag 指定版本构建
+- 📝 **统一 README** — 整合飞牛/群辉/通用 Docker 三种部署方式
+
+### 文档
+- 群辉安装说明：SSH / Container Manager 图形界面 / git clone 三种方式
+- 指定版本构建说明（`git checkout v0.3.1`）
+- 版本管理章节加入 README
+
+---
+
 # v0.3.1 (2026-06-03)
 
 ## 版本号修复 + 文档更新

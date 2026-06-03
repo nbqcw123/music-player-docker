@@ -1,11 +1,10 @@
-# 🎵 Music Player Docker - 飞牛 NAS Docker Compose 配置
-# 版本: latest
+# 🎵 Music Player Docker - 群辉 (Synology) Docker Compose 配置
 #
-# 注意: 此配置需要当前目录包含 Dockerfile 和 main.py
 # 安装步骤:
-#   1. SSH 登录飞牛 NAS
-#   2. mkdir -p /vol1/docker/music-player && cd /vol1/docker/music-player
-#   3. 将 Dockerfile 和 main.py 放入该目录
+#   1. SSH 登录群辉 NAS
+#   2. mkdir -p /volume1/docker/music-player && cd /volume1/docker/music-player
+#   3. 将本文件和 main.py 放入该目录
+#      (main.py 从 https://github.com/nbqcw123/music-player-docker 下载)
 #   4. docker compose up -d
 #   5. 访问 http://NAS的IP:8080/player
 
@@ -14,7 +13,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: music-player:dev
+    image: music-player:latest
     container_name: music-player
     ports:
       - "8080:8080"
