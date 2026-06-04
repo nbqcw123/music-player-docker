@@ -265,7 +265,7 @@ def _init_netdisk_manager():
 app = FastAPI(
     title="Music Player Docker",
     description="在线音乐播放器 - 支持多源搜索、无损格式、SPA界面",
-    version="0.3.1"
+    version="0.3.2"
 )
 
 app.add_middleware(
@@ -825,7 +825,7 @@ async def get_recommendations() -> dict:
 # ─── API 路由 ───────────────────────────────────────────
 @app.get("/")
 async def root():
-    return {"status": "ok", "app": "Music Player Docker", "version": "0.3.1"}
+    return {"status": "ok", "app": "Music Player Docker", "version": "0.3.2"}
 
 
 @app.get("/api/sources")
