@@ -13,7 +13,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: music-player:latest
+    image: music-player:0.3.3
     container_name: music-player
     ports:
       - "8080:8080"
