@@ -2,8 +2,8 @@
 FROM m.daocloud.io/docker.io/library/python:3.11-slim
 
 LABEL maintainer="Music Player Docker"
-LABEL version="0.3.1"
-LABEL description="在线音乐播放器 - 多源搜索/SPA界面/国内音源 v0.3.1"
+LABEL version="0.3.3"
+LABEL description="在线音乐播放器 - 多源搜索/SPA界面/国内音源 v0.3.3"
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
