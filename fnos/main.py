@@ -546,26 +546,72 @@ class BilibiliSource(MusicSourceBase):
         return results
 
     async def get_stream(self, bvid: str) -> dict:
-        url = f"https://www.bilibili.com/video/{bvid}"
-        opts = {**YDL_OPTS_BASE, "format": "bestaudio/best"}
+        """使用B站API直接获取音频流URL，避免yt-dlp防盗链问题"""
         try:
-            with yt_dlp.YoutubeDL(opts) as ydl:
-                info = ydl.extract_info(url, download=False)
-                audio_url = info.get("url", "")
-                if not audio_url:
-                    formats = info.get("formats", [])
-                    audio_formats = [f for f in formats if f.get("acodec") != "none"]
-                    if audio_formats:
-                        audio_formats.sort(key=lambda x: (x.get("tbr", 0) or 0), reverse=True)
-                        audio_url = audio_formats[0].get("url", "")
-                return {
-                    "stream_url": audio_url,
-                    "title": info.get("title", ""),
-                    "artist": info.get("channel", ""),
-                    "duration": info.get("duration", 0),
-                    "thumbnail": info.get("thumbnail", ""),
-                    "format": "m4a",
-                }
+            # 1. 先通过搜索API获取cid和标题信息
+            info_url = f"https://api.bilibili.com/x/web-interface/view?bvid={bvid}"
+            headers = {
+                **COMMON_HEADERS,
+                "Referer": f"https://www.bilibili.com/video/{bvid}",
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(info_url, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        return {}
+                    data = await resp.json(encoding="utf-8", content_type=None)
+                    if data.get("code") != 0:
+                        return {}
+                    video_data = data.get("data", {})
+                    cid = video_data.get("cid", 0)
+                    title = video_data.get("title", "")
+                    artist = video_data.get("owner", {}).get("name", "")
+                    duration = video_data.get("duration", 0)
+                    thumbnail = video_data.get("pic", "")
+                    if not cid:
+                        return {}
+
+            # 2. 获取播放流URL（请求高音质音频）
+            play_url = "https://api.bilibili.com/x/player/playurl"
+            params = {
+                "bvid": bvid,
+                "cid": cid,
+                "fnval": "16",  # 请求DASH格式，包含独立音频流
+                "qn": "32",     # 低画质（只要音频）
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(play_url, params=params, headers=headers, timeout=aiohttp.ClientTimeout(total=10)) as resp:
+                    if resp.status != 200:
+                        return {}
+                    play_data = await resp.json(encoding="utf-8", content_type=None)
+                    if play_data.get("code") != 0:
+                        return {}
+                    dash = play_data.get("data", {}).get("dash")
+                    if dash:
+                        # DASH格式：提取音频流
+                        audio_list = dash.get("audio", [])
+                        if audio_list:
+                            # 按带宽排序，取最高音质
+                            audio_list.sort(key=lambda x: x.get("bandwidth", 0), reverse=True)
+                            audio_url = audio_list[0].get("baseUrl", "") or audio_list[0].get("base_url", "")
+                            return {
+                                "stream_url": audio_url,
+                                "title": title,
+                                "artist": artist,
+                                "duration": duration,
+                                "thumbnail": thumbnail,
+                                "format": "m4a",
+                            }
+                    # 无DASH，尝试durl
+                    durl = play_data.get("data", {}).get("durl", [])
+                    if durl:
+                        return {
+                            "stream_url": durl[0].get("url", ""),
+                            "title": title,
+                            "artist": artist,
+                            "duration": duration,
+                            "thumbnail": thumbnail,
+                            "format": "flv",
+                        }
         except Exception as e:
             print(f"[Bilibili] Stream error: {e}")
             return {}
@@ -797,8 +843,9 @@ async def search_music(
     q: str = Query(..., min_length=1, description="搜索关键词"),
     source: str = Query("all", description="音乐源"),
     limit: int = Query(20, ge=1, le=50),
+    check: bool = Query(True, description="是否预检测链接可用性"),
 ):
-    """全局搜索：自动搜索所有可用源，合并去重"""
+    """全局搜索：自动搜索所有可用源，合并去重，预检测链接可用性"""
     all_results = {}
     
     # 在线音乐源
@@ -837,6 +884,10 @@ async def search_music(
             t["_source"] = src  # 内部标记来源，前端不用
             merged.append(t)
     
+    # 预检测：批量检测链接可用性，只返回能播放的歌曲
+    if check and merged:
+        merged = await _filter_playable(merged, max_check=30)
+    
     return {"query": q, "results": {"all": merged}}
 
 async def _search_netdisk(netdisk: dict, keyword: str, limit: int) -> dict:
@@ -853,6 +904,67 @@ async def _search_netdisk(netdisk: dict, keyword: str, limit: int) -> dict:
             print(f"[NetDisk] {name} error: {e}")
             results[name] = []
     return results
+
+
+async def _filter_playable(tracks: list, max_check: int = 30) -> list:
+    """批量预检测歌曲链接可用性，只返回能播放的歌曲（并发检测，最多max_check首）"""
+    check_tracks = tracks[:max_check]
+    remaining = tracks[max_check:]
+    
+    async def _check_one(t: dict) -> bool:
+        src = t.get("_source", "netease")
+        tid = t.get("id", "")
+        if not tid:
+            return False
+        try:
+            stream_info = await asyncio.wait_for(
+                source_manager.get_stream(src, tid),
+                timeout=8
+            )
+            stream_url = stream_info.get("stream_url", "")
+            if not stream_url:
+                return False
+            # 检测链接是否真的可用
+            parsed = urlparse(stream_url)
+            host = parsed.host.lower()
+            if "bilibili" in host or "bilivideo" in host:
+                referer = "https://www.bilibili.com/"
+            elif "youtube" in host or "googlevideo" in host:
+                referer = "https://www.youtube.com/"
+            elif "music.126" in host or "163" in host:
+                referer = "https://music.163.com/"
+            elif "qq.com" in host or "gtimg" in host:
+                referer = "https://y.qq.com/"
+            elif "kugou" in host:
+                referer = "https://www.kugou.com/"
+            else:
+                referer = "https://www.bilibili.com/"
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Referer": referer,
+                "Range": "bytes=0-1023",
+            }
+            async with aiohttp.ClientSession() as session:
+                async with session.get(stream_url, headers=headers, timeout=aiohttp.ClientTimeout(total=5), allow_redirects=True) as resp:
+                    return resp.status in (200, 206)
+        except Exception:
+            return False
+    
+    # 并发检测所有歌曲
+    tasks = [_check_one(t) for t in check_tracks]
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    
+    playable = []
+    for t, ok in zip(check_tracks, results):
+        if ok is True:
+            playable.append(t)
+        else:
+            print(f"[Filter] 不可播放: {t.get('title', '')} ({t.get('_source', '')})")
+    
+    # 超出max_check部分直接保留（不检测）
+    playable.extend(remaining)
+    print(f"[Filter] 预检测: {len(check_tracks)}首中{len(playable)-len(remaining)}首可播放")
+    return playable
 
 
 @app.get("/api/stream")
@@ -940,9 +1052,23 @@ async def get_lyric(
 async def check_url(url: str = Query(...)):
     """检测播放链接是否可用（GET Range 请求前1KB，5秒超时）"""
     try:
+        parsed = urlparse(url)
+        host = parsed.host.lower()
+        if "bilibili" in host or "bilivideo" in host:
+            referer = "https://www.bilibili.com/"
+        elif "youtube" in host or "googlevideo" in host:
+            referer = "https://www.youtube.com/"
+        elif "music.126" in host or "163" in host:
+            referer = "https://music.163.com/"
+        elif "qq.com" in host or "gtimg" in host:
+            referer = "https://y.qq.com/"
+        elif "kugou" in host:
+            referer = "https://www.kugou.com/"
+        else:
+            referer = "https://www.bilibili.com/"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://www.youtube.com/",
+            "Referer": referer,
             "Range": "bytes=0-1023",
         }
         async with aiohttp.ClientSession() as session:
@@ -956,12 +1082,27 @@ async def check_url(url: str = Query(...)):
 @app.get("/api/proxy")
 async def proxy_stream(url: str = Query(..., description="音频流URL")):
     try:
+        # 根据URL来源动态设置Referer，绕过防盗链
+        parsed = urlparse(url)
+        host = parsed.host.lower()
+        if "bilibili" in host or "bilivideo" in host:
+            referer = "https://www.bilibili.com/"
+        elif "youtube" in host or "googlevideo" in host:
+            referer = "https://www.youtube.com/"
+        elif "music.126" in host or "163" in host:
+            referer = "https://music.163.com/"
+        elif "qq.com" in host or "gtimg" in host:
+            referer = "https://y.qq.com/"
+        elif "kugou" in host:
+            referer = "https://www.kugou.com/"
+        else:
+            referer = "https://www.bilibili.com/"
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Referer": "https://www.youtube.com/",
+            "Referer": referer,
         }
         async with aiohttp.ClientSession() as session:
-            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+            async with session.get(url, headers=headers, timeout=aiohttp.ClientTimeout(total=120), allow_redirects=True) as resp:
                 if resp.status >= 400:
                     raise HTTPException(status_code=502, detail=f"源站返回 {resp.status}")
                 content_type = resp.headers.get("Content-Type", "audio/mpeg")
